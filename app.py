@@ -5,7 +5,7 @@ from datetime import datetime
 import random
 
 # ---------------------------------------------------------
-# 1. DATABASE CONFIGURATION
+# 1. DATABASE CONFIGURATION 
 # ---------------------------------------------------------
 MONGO_URI = st.secrets["MONGO_URI"]
 MASTER_DOCTOR_KEY = "DOC-SECURE-2026"
@@ -151,28 +151,31 @@ else:
         if not records:
             st.info("No patient intake submissions currently in the queue.")
         else:
-            for record in records:
-                # Creates a neat visual card for each patient
-                with st.container(border=True):
-                    doc_col1, doc_col2 = st.columns([3, 1])
-                    
-                    with doc_col1:
-                        st.write(f"**Patient Name:** {record['patient_username']} (ID: {record['patient_id']})")
-                        st.write(f"**Symptoms:** {record['symptoms']} | **Duration:** {record['duration']}")
-                        st.caption(f"Submitted: {record['timestamp']}")
-                    
-                    with doc_col2:
-                        if record['status'] == "Awaiting Review":
-                            # The button uses the unique intake_id so Streamlit knows exactly which one to sign
-                            if st.button("✍️ Sign & Complete", key=f"sign_{record['intake_id']}", type="primary", use_container_width=True):
-                                doctor_signature = f"Dr. {st.session_state.username}"
-                                intakes_col.update_one(
-                                    {"intake_id": record['intake_id']},
-                                    {"$set": {"status": "Reviewed", "signed_by": doctor_signature}}
-                                )
-                                st.rerun()
-                        else:
-                            st.success(f"✅ {record['signed_by']}")
+            # BROUGHT BACK: The old, clean table view of all patients
+            st.dataframe(records, use_container_width=True)
+            
+            st.markdown("---")
+            st.subheader("✍️ Sign & Complete Record")
+            
+            # Filters the list to only show records that still need a signature
+            pending_records = [r for r in records if r.get("status") == "Awaiting Review"]
+            
+            if pending_records:
+                # Creates a readable list for the dropdown menu
+                pending_options = {r["intake_id"]: f"{r['patient_username']} (ID: {r['patient_id']}) - Symptoms: {r['symptoms'][:30]}..." for r in pending_records}
+                
+                selected_intake = st.selectbox("Select a patient record to sign off:", options=list(pending_options.keys()), format_func=lambda x: pending_options[x])
+                
+                if st.button("✍️ Sign off on Patient", type="primary"):
+                    doctor_signature = f"Dr. {st.session_state.username}"
+                    intakes_col.update_one(
+                        {"intake_id": selected_intake},
+                        {"$set": {"status": "Reviewed", "signed_by": doctor_signature}}
+                    )
+                    st.success("Record successfully signed!")
+                    st.rerun()
+            else:
+                st.success("🎉 All patients in the queue have been reviewed and signed!")
 
     # --- PATIENT VIEW ---
     elif st.session_state.role == "Patient":
@@ -189,7 +192,6 @@ else:
             
             if st.button("Submit to Doctor Queue", type="primary"):
                 if symptoms:
-                    # Generate a unique tracking ID for this specific form
                     intake_id = f"IN-{random.randint(10000, 99999)}"
                     intakes_col.insert_one({
                         "intake_id": intake_id,
@@ -205,7 +207,7 @@ else:
                 else:
                     st.warning("Please enter your symptoms before submitting.")
         
-        # History View (Redesigned)
+        # History View
         with tab_history:
             st.subheader("Your Submission History")
             my_records = list(intakes_col.find({"patient_username": st.session_state.username}, {"_id": 0}).sort("timestamp", -1))
@@ -214,7 +216,7 @@ else:
                 st.info("You have not submitted any intake forms yet.")
             else:
                 for rec in my_records:
-                    # Uses columns to push the signature to the right side
+                    # Keeps the signature cleanly on the right side for the patient to see
                     with st.container(border=True):
                         hist_col1, hist_col2 = st.columns([3, 1])
                         with hist_col1:
