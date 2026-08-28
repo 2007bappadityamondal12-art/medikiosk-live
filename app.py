@@ -2,12 +2,11 @@ import streamlit as st
 from pymongo import MongoClient
 import hashlib
 from datetime import datetime
-import random # Added to generate unique IDs
+import random
 
 # ---------------------------------------------------------
 # 1. DATABASE CONFIGURATION
 # ---------------------------------------------------------
-# Pulls the secret from Streamlit Cloud directly
 MONGO_URI = st.secrets["MONGO_URI"]
 MASTER_DOCTOR_KEY = "DOC-SECURE-2026"
 
@@ -27,14 +26,13 @@ def register_user(username, password, role):
     if users_col.find_one({"username": username}):
         return False
     
-    # Generate a unique 6-digit ID for patients, and a 4-digit ID for doctors
     unique_id = f"PT-{random.randint(100000, 999999)}" if role == "Patient" else f"DR-{random.randint(1000, 9999)}"
     
     users_col.insert_one({
         "username": username,
         "password_hash": hash_password(password),
         "role": role,
-        "unique_id": unique_id, # Saves the ID to the database
+        "unique_id": unique_id,
         "created_at": datetime.utcnow()
     })
     return True
@@ -45,9 +43,7 @@ def authenticate_user(username, password, expected_role):
         "password_hash": hash_password(password),
         "role": expected_role
     })
-    # Return both the role and the unique ID if login is successful
     if user:
-        # get() is used in case older accounts don't have an ID yet
         return {"role": user["role"], "unique_id": user.get("unique_id", "N/A")}
     return None
 
@@ -58,7 +54,7 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.username = ""
     st.session_state.role = ""
-    st.session_state.unique_id = "" # Added unique ID to session memory
+    st.session_state.unique_id = ""
     st.session_state.active_portal = None
 
 def logout():
@@ -133,13 +129,13 @@ if not st.session_state.logged_in:
                         st.error("Username already exists.")
 
 # ---------------------------------------------------------
-# 4. LOGGED-IN DASHBOARDS (CONNECTED TO MONGODB)
+# 4. LOGGED-IN DASHBOARDS
 # ---------------------------------------------------------
 else:
     top_col1, top_col2 = st.columns([8, 2])
     with top_col1:
-        # Now displays the unique ID at the top of the screen
-        st.caption(f"Logged in as **{st.session_state.username}** | ID: **{st.session_state.unique_id}** ({st.session_state.role})")
+        prefix = "Dr. " if st.session_state.role == "Doctor" else ""
+        st.caption(f"Logged in as **{prefix}{st.session_state.username}** | ID: **{st.session_state.unique_id}** ({st.session_state.role})")
     with top_col2:
         if st.button("Log Out"):
             logout()
@@ -148,13 +144,35 @@ else:
     # --- DOCTOR VIEW ---
     if st.session_state.role == "Doctor":
         st.title("🩺 Live Physician OPD Dashboard")
-        st.subheader("Incoming Patient Intake Queue")
+        st.subheader("Incoming Patient Queue")
         
         records = list(intakes_col.find({}, {"_id": 0}).sort("timestamp", -1))
-        if records:
-            st.dataframe(records, use_container_width=True)
-        else:
+        
+        if not records:
             st.info("No patient intake submissions currently in the queue.")
+        else:
+            for record in records:
+                # Creates a neat visual card for each patient
+                with st.container(border=True):
+                    doc_col1, doc_col2 = st.columns([3, 1])
+                    
+                    with doc_col1:
+                        st.write(f"**Patient Name:** {record['patient_username']} (ID: {record['patient_id']})")
+                        st.write(f"**Symptoms:** {record['symptoms']} | **Duration:** {record['duration']}")
+                        st.caption(f"Submitted: {record['timestamp']}")
+                    
+                    with doc_col2:
+                        if record['status'] == "Awaiting Review":
+                            # The button uses the unique intake_id so Streamlit knows exactly which one to sign
+                            if st.button("✍️ Sign & Complete", key=f"sign_{record['intake_id']}", type="primary", use_container_width=True):
+                                doctor_signature = f"Dr. {st.session_state.username}"
+                                intakes_col.update_one(
+                                    {"intake_id": record['intake_id']},
+                                    {"$set": {"status": "Reviewed", "signed_by": doctor_signature}}
+                                )
+                                st.rerun()
+                        else:
+                            st.success(f"✅ {record['signed_by']}")
 
     # --- PATIENT VIEW ---
     elif st.session_state.role == "Patient":
@@ -171,25 +189,40 @@ else:
             
             if st.button("Submit to Doctor Queue", type="primary"):
                 if symptoms:
+                    # Generate a unique tracking ID for this specific form
+                    intake_id = f"IN-{random.randint(10000, 99999)}"
                     intakes_col.insert_one({
-                        "patient_id": st.session_state.unique_id, # Saves the ID with the intake
+                        "intake_id": intake_id,
+                        "patient_id": st.session_state.unique_id,
                         "patient_username": st.session_state.username,
                         "symptoms": symptoms,
                         "duration": duration,
                         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "status": "Awaiting Review"
+                        "status": "Awaiting Review",
+                        "signed_by": "Pending"
                     })
                     st.success("Your intake details have been sent to the doctor dashboard!")
                 else:
                     st.warning("Please enter your symptoms before submitting.")
         
-        # History View
+        # History View (Redesigned)
         with tab_history:
             st.subheader("Your Submission History")
-            # Searches the database ONLY for records matching this specific user
             my_records = list(intakes_col.find({"patient_username": st.session_state.username}, {"_id": 0}).sort("timestamp", -1))
             
-            if my_records:
-                st.dataframe(my_records, use_container_width=True)
-            else:
+            if not my_records:
                 st.info("You have not submitted any intake forms yet.")
+            else:
+                for rec in my_records:
+                    # Uses columns to push the signature to the right side
+                    with st.container(border=True):
+                        hist_col1, hist_col2 = st.columns([3, 1])
+                        with hist_col1:
+                            st.write(f"**Symptoms:** {rec['symptoms']}")
+                            st.write(f"**Duration:** {rec['duration']}")
+                            st.caption(f"Submitted on {rec['timestamp']}")
+                        with hist_col2:
+                            if rec['status'] == "Reviewed":
+                                st.success(f"✅ Signed By\n\n**{rec['signed_by']}**")
+                            else:
+                                st.warning("⏳ Pending Doctor Review")
