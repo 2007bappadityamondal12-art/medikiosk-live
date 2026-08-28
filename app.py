@@ -2,12 +2,12 @@ import streamlit as st
 from pymongo import MongoClient
 import hashlib
 from datetime import datetime
+import random # Added to generate unique IDs
 
 # ---------------------------------------------------------
-# 1. DATABASE CONFIGURATION (MONGODB ATLAS)
+# 1. DATABASE CONFIGURATION
 # ---------------------------------------------------------
-# Replace with your actual MongoDB Atlas connection string
-# This tells Python to look inside the cloud's secure vault
+# Pulls the secret from Streamlit Cloud directly
 MONGO_URI = st.secrets["MONGO_URI"]
 MASTER_DOCTOR_KEY = "DOC-SECURE-2026"
 
@@ -26,10 +26,15 @@ def hash_password(password: str) -> str:
 def register_user(username, password, role):
     if users_col.find_one({"username": username}):
         return False
+    
+    # Generate a unique 6-digit ID for patients, and a 4-digit ID for doctors
+    unique_id = f"PT-{random.randint(100000, 999999)}" if role == "Patient" else f"DR-{random.randint(1000, 9999)}"
+    
     users_col.insert_one({
         "username": username,
         "password_hash": hash_password(password),
         "role": role,
+        "unique_id": unique_id, # Saves the ID to the database
         "created_at": datetime.utcnow()
     })
     return True
@@ -40,7 +45,11 @@ def authenticate_user(username, password, expected_role):
         "password_hash": hash_password(password),
         "role": expected_role
     })
-    return user["role"] if user else None
+    # Return both the role and the unique ID if login is successful
+    if user:
+        # get() is used in case older accounts don't have an ID yet
+        return {"role": user["role"], "unique_id": user.get("unique_id", "N/A")}
+    return None
 
 # ---------------------------------------------------------
 # 2. SESSION STATE MANAGEMENT
@@ -49,12 +58,14 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.username = ""
     st.session_state.role = ""
+    st.session_state.unique_id = "" # Added unique ID to session memory
     st.session_state.active_portal = None
 
 def logout():
     st.session_state.logged_in = False
     st.session_state.username = ""
     st.session_state.role = ""
+    st.session_state.unique_id = ""
     st.session_state.active_portal = None
     st.rerun()
 
@@ -92,11 +103,12 @@ if not st.session_state.logged_in:
             login_pass = st.text_input("Password", type="password", key="login_p")
             
             if st.button(f"Log In to {portal} Portal", type="primary"):
-                role = authenticate_user(login_user, login_pass, portal)
-                if role:
+                user_data = authenticate_user(login_user, login_pass, portal)
+                if user_data:
                     st.session_state.logged_in = True
                     st.session_state.username = login_user
-                    st.session_state.role = role
+                    st.session_state.role = user_data["role"]
+                    st.session_state.unique_id = user_data["unique_id"]
                     st.rerun()
                 else:
                     st.error(f"Invalid credentials or incorrect portal access.")
@@ -126,13 +138,14 @@ if not st.session_state.logged_in:
 else:
     top_col1, top_col2 = st.columns([8, 2])
     with top_col1:
-        st.caption(f"Logged in as **{st.session_state.username}** ({st.session_state.role})")
+        # Now displays the unique ID at the top of the screen
+        st.caption(f"Logged in as **{st.session_state.username}** | ID: **{st.session_state.unique_id}** ({st.session_state.role})")
     with top_col2:
         if st.button("Log Out"):
             logout()
     st.markdown("---")
 
-    # DOCTOR VIEW: Fetches real patient submissions from MongoDB
+    # --- DOCTOR VIEW ---
     if st.session_state.role == "Doctor":
         st.title("🩺 Live Physician OPD Dashboard")
         st.subheader("Incoming Patient Intake Queue")
@@ -143,23 +156,40 @@ else:
         else:
             st.info("No patient intake submissions currently in the queue.")
 
-    # PATIENT VIEW: Writes submission directly to MongoDB
+    # --- PATIENT VIEW ---
     elif st.session_state.role == "Patient":
         st.title("📋 Citizen Health Intake")
-        st.write("Submit your health complaints before entering the doctor's chamber.")
+        st.write(f"Welcome back. Your Patient ID is **{st.session_state.unique_id}**.")
         
-        symptoms = st.text_area("Describe your primary symptoms:")
-        duration = st.text_input("Duration of symptoms (e.g., 3 days, 2 weeks):")
+        tab_intake, tab_history = st.tabs(["📝 New Intake", "📂 My Past Records"])
         
-        if st.button("Submit to Doctor Queue", type="primary"):
-            if symptoms:
-                intakes_col.insert_one({
-                    "patient_username": st.session_state.username,
-                    "symptoms": symptoms,
-                    "duration": duration,
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "status": "Awaiting Review"
-                })
-                st.success("Your intake details have been sent to the doctor dashboard!")
+        # New Form Submission
+        with tab_intake:
+            st.subheader("Submit New Symptoms")
+            symptoms = st.text_area("Describe your primary symptoms:")
+            duration = st.text_input("Duration of symptoms (e.g., 3 days, 2 weeks):")
+            
+            if st.button("Submit to Doctor Queue", type="primary"):
+                if symptoms:
+                    intakes_col.insert_one({
+                        "patient_id": st.session_state.unique_id, # Saves the ID with the intake
+                        "patient_username": st.session_state.username,
+                        "symptoms": symptoms,
+                        "duration": duration,
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "status": "Awaiting Review"
+                    })
+                    st.success("Your intake details have been sent to the doctor dashboard!")
+                else:
+                    st.warning("Please enter your symptoms before submitting.")
+        
+        # History View
+        with tab_history:
+            st.subheader("Your Submission History")
+            # Searches the database ONLY for records matching this specific user
+            my_records = list(intakes_col.find({"patient_username": st.session_state.username}, {"_id": 0}).sort("timestamp", -1))
+            
+            if my_records:
+                st.dataframe(my_records, use_container_width=True)
             else:
-                st.warning("Please enter your symptoms before submitting.")
+                st.info("You have not submitted any intake forms yet.")
