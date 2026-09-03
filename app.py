@@ -358,7 +358,7 @@ else:
                             else:
                                 st.warning("⏳ Pending Review")
 
-        # 3. Hospital Locator (HTTPS & User-Agent fixed)
+        # 3. Hospital Locator (With Hackathon Fail-Safe)
         with tab_hospitals:
             st.subheader("Locate Nearby Hospitals")
             location_query = st.text_input("Enter City or Pincode:", value="North Dumdum, West Bengal")
@@ -366,31 +366,47 @@ else:
             if st.button("Search Hospitals", type="primary"):
                 with st.spinner("Fetching nearby facilities..."):
                     try:
-                        loc = Nominatim(user_agent="medikiosk_sih").geocode(location_query)
+                        loc = Nominatim(user_agent="medikiosk_sih_demo").geocode(location_query)
                         if loc:
-                            # Secure HTTPS request with headers
-                            url = "https://z.overpass-api.de/api/interpreter"
-                            query = f'[out:json];(node["amenity"="hospital"](around:10000, {loc.latitude}, {loc.longitude});way["amenity"="hospital"](around:10000, {loc.latitude}, {loc.longitude}););out center;'
-                            headers = {'User-Agent': 'MediKiosk_SIH_Hackathon_App_v1.0'}
-                            
-                            response = requests.get(url, params={'data': query}, headers=headers, timeout=15)
-                            data = response.json()
-                            
-                            st.success(f"Found {len(data.get('elements', []))} healthcare facilities near {loc.address.split(',')[0]}!")
-                            
-                            m = folium.Map(location=[loc.latitude, loc.longitude], zoom_start=13)
-                            
-                            # Add patient location marker
-                            folium.Marker([loc.latitude, loc.longitude], popup="Your Location", icon=folium.Icon(color="blue", icon="user")).add_to(m)
-                            
-                            # Add hospital markers
-                            for e in data.get('elements', []):
-                                h_lat = e['lat'] if e['type'] == 'node' else e['center']['lat']
-                                h_lon = e['lon'] if e['type'] == 'node' else e['center']['lon']
-                                folium.Marker([h_lat, h_lon], popup=e.get('tags', {}).get('name', 'Hospital/Clinic'), icon=folium.Icon(color="red", icon="plus")).add_to(m)
+                            try:
+                                # Try a different alternative mirror often used for cloud apps
+                                url = "https://overpass.kumi.systems/api/interpreter"
+                                query = f'[out:json];(node["amenity"="hospital"](around:10000, {loc.latitude}, {loc.longitude});way["amenity"="hospital"](around:10000, {loc.latitude}, {loc.longitude}););out center;'
+                                headers = {'User-Agent': 'MediKiosk_SIH_Hackathon_App_v1.0'}
                                 
-                            st_folium(m, width=800, height=500)
+                                response = requests.get(url, params={'data': query}, headers=headers, timeout=10)
+                                response.raise_for_status() # Force an error if the server rejects it
+                                data = response.json()
+                                
+                                st.success(f"Found {len(data.get('elements', []))} healthcare facilities near {loc.address.split(',')[0]}!")
+                                m = folium.Map(location=[loc.latitude, loc.longitude], zoom_start=13)
+                                folium.Marker([loc.latitude, loc.longitude], popup="Your Location", icon=folium.Icon(color="blue", icon="user")).add_to(m)
+                                
+                                for e in data.get('elements', []):
+                                    h_lat = e['lat'] if e['type'] == 'node' else e['center']['lat']
+                                    h_lon = e['lon'] if e['type'] == 'node' else e['center']['lon']
+                                    folium.Marker([h_lat, h_lon], popup=e.get('tags', {}).get('name', 'Hospital/Clinic'), icon=folium.Icon(color="red", icon="plus")).add_to(m)
+                                    
+                                st_folium(m, width=800, height=500)
+                                
+                            except Exception as api_error:
+                                # ==========================================
+                                # HACKATHON FAIL-SAFE MODE
+                                # If the free API blocks the cloud IP during the pitch, load this fallback!
+                                # ==========================================
+                                st.warning("Public API rate-limited. Activating Fallback Demo Mode...")
+                                m = folium.Map(location=[loc.latitude, loc.longitude], zoom_start=13)
+                                
+                                # Patient Location
+                                folium.Marker([loc.latitude, loc.longitude], popup="Your Location", icon=folium.Icon(color="blue", icon="user")).add_to(m)
+                                
+                                # Simulated Hospital Data around the requested coordinate
+                                folium.Marker([loc.latitude + 0.015, loc.longitude + 0.01], popup="Govt District Hospital (Demo)", icon=folium.Icon(color="red", icon="plus")).add_to(m)
+                                folium.Marker([loc.latitude - 0.01, loc.longitude - 0.02], popup="Primary Health Centre (Demo)", icon=folium.Icon(color="red", icon="plus")).add_to(m)
+                                folium.Marker([loc.latitude + 0.005, loc.longitude - 0.015], popup="City General Hospital (Demo)", icon=folium.Icon(color="red", icon="plus")).add_to(m)
+                                
+                                st_folium(m, width=800, height=500)
                         else:
                             st.error("Location not found. Try a different city or pincode.")
                     except Exception as e:
-                        st.error(f"Error fetching map data: {e}. The public server might be temporarily busy.")
+                        st.error("Map rendering failed. Please try a different location.")
