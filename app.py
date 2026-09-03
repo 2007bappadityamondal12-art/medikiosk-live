@@ -345,5 +345,5 @@ else:
                                 h_lon = e['lon'] if e['type'] == 'node' else e['center']['lon']
                                 folium.Marker([h_lat, h_lon], popup=e.get('tags', {}).get('name', 'Hospital'), icon=folium.Icon(color="red")).add_to(m)
                             st_folium(m, width=800, height=500)
-                    except:
-                        st.error("Error fetching map data.")
+                    except Exception as e:
+                        st.error(f"Error fetching map data: {e}")
