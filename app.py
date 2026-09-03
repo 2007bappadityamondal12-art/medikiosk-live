@@ -358,24 +358,29 @@ else:
                             else:
                                 st.warning("⏳ Pending Review")
 
-        # 3. Hospital Locator (With Hackathon Fail-Safe)
+        # 3. Hospital Locator (With Disappearing Map Fix)
         with tab_hospitals:
             st.subheader("Locate Nearby Hospitals")
             location_query = st.text_input("Enter City or Pincode:", value="North Dumdum, West Bengal")
             
+            # 1. Use session state to remember the button was clicked
             if st.button("Search Hospitals", type="primary"):
+                st.session_state.show_map = True
+                st.session_state.map_location = location_query
+
+            # Check if the map should be shown (even after a page refresh)
+            if st.session_state.get("show_map", False):
                 with st.spinner("Fetching nearby facilities..."):
                     try:
-                        loc = Nominatim(user_agent="medikiosk_sih_demo").geocode(location_query)
+                        loc = Nominatim(user_agent="medikiosk_sih_demo").geocode(st.session_state.map_location)
                         if loc:
                             try:
-                                # Try a different alternative mirror often used for cloud apps
                                 url = "https://overpass.kumi.systems/api/interpreter"
                                 query = f'[out:json];(node["amenity"="hospital"](around:10000, {loc.latitude}, {loc.longitude});way["amenity"="hospital"](around:10000, {loc.latitude}, {loc.longitude}););out center;'
                                 headers = {'User-Agent': 'MediKiosk_SIH_Hackathon_App_v1.0'}
                                 
                                 response = requests.get(url, params={'data': query}, headers=headers, timeout=10)
-                                response.raise_for_status() # Force an error if the server rejects it
+                                response.raise_for_status() 
                                 data = response.json()
                                 
                                 st.success(f"Found {len(data.get('elements', []))} healthcare facilities near {loc.address.split(',')[0]}!")
@@ -387,25 +392,19 @@ else:
                                     h_lon = e['lon'] if e['type'] == 'node' else e['center']['lon']
                                     folium.Marker([h_lat, h_lon], popup=e.get('tags', {}).get('name', 'Hospital/Clinic'), icon=folium.Icon(color="red", icon="plus")).add_to(m)
                                     
-                                st_folium(m, width=800, height=500)
+                                # 2. added returned_objects=[] so clicking a pin doesn't refresh the page
+                                st_folium(m, width=800, height=500, returned_objects=[])
                                 
                             except Exception as api_error:
-                                # ==========================================
-                                # HACKATHON FAIL-SAFE MODE
-                                # If the free API blocks the cloud IP during the pitch, load this fallback!
-                                # ==========================================
                                 st.warning("Public API rate-limited. Activating Fallback Demo Mode...")
                                 m = folium.Map(location=[loc.latitude, loc.longitude], zoom_start=13)
-                                
-                                # Patient Location
                                 folium.Marker([loc.latitude, loc.longitude], popup="Your Location", icon=folium.Icon(color="blue", icon="user")).add_to(m)
-                                
-                                # Simulated Hospital Data around the requested coordinate
                                 folium.Marker([loc.latitude + 0.015, loc.longitude + 0.01], popup="Govt District Hospital (Demo)", icon=folium.Icon(color="red", icon="plus")).add_to(m)
                                 folium.Marker([loc.latitude - 0.01, loc.longitude - 0.02], popup="Primary Health Centre (Demo)", icon=folium.Icon(color="red", icon="plus")).add_to(m)
                                 folium.Marker([loc.latitude + 0.005, loc.longitude - 0.015], popup="City General Hospital (Demo)", icon=folium.Icon(color="red", icon="plus")).add_to(m)
                                 
-                                st_folium(m, width=800, height=500)
+                                # 2. added returned_objects=[] here as well
+                                st_folium(m, width=800, height=500, returned_objects=[])
                         else:
                             st.error("Location not found. Try a different city or pincode.")
                     except Exception as e:
