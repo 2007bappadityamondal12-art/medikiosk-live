@@ -369,7 +369,7 @@ else:
                         loc = Nominatim(user_agent="medikiosk_sih").geocode(location_query)
                         if loc:
                             # Secure HTTPS request with headers
-                            url = "https://overpass-api.de/api/interpreter"
+                            url = "https://z.overpass-api.de/api/interpreter"
                             query = f'[out:json];(node["amenity"="hospital"](around:10000, {loc.latitude}, {loc.longitude});way["amenity"="hospital"](around:10000, {loc.latitude}, {loc.longitude}););out center;'
                             headers = {'User-Agent': 'MediKiosk_SIH_Hackathon_App_v1.0'}
                             
