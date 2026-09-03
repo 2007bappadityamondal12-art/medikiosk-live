@@ -359,13 +359,21 @@ else:
                                 st.warning("⏳ Pending Review")
 
         # 3. Hospital Locator (AI-Powered Government Search)
+        # 3. Hospital Locator (AI-Powered Government Search)
         with tab_hospitals:
             st.subheader("Locate Government Hospitals (AI-Powered)")
-            location_query = st.text_input("Enter City or Pincode:", value="College Street, Kolkata")
+            
+            # The box is now empty by default with a helpful placeholder
+            location_query = st.text_input("Enter City or Pincode:", value="", placeholder="e.g., Kolkata, West Bengal")
             
             if st.button("Search Hospitals", type="primary"):
-                st.session_state.show_map = True
-                st.session_state.map_location = location_query
+                # Safety check to prevent searching for a blank location
+                if not location_query.strip():
+                    st.warning("Please enter a location first.")
+                    st.session_state.show_map = False
+                else:
+                    st.session_state.show_map = True
+                    st.session_state.map_location = location_query
 
             if st.session_state.get("show_map", False):
                 with st.spinner("AI is triangulating real Government Hospitals..."):
