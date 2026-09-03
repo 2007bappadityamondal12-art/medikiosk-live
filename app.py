@@ -14,7 +14,7 @@ from streamlit_drawable_canvas import st_canvas
 from PIL import Image
 import base64
 import io
-
+import json
 # ---------------------------------------------------------
 # 1. DATABASE & AI CONFIGURATION
 # ---------------------------------------------------------
@@ -358,66 +358,68 @@ else:
                             else:
                                 st.warning("⏳ Pending Review")
 
-        # 3. Hospital Locator (With Disappearing Map Fix)
-        # 3. Hospital Locator (Broadened Search for Govt Clinics & PHCs)
+        # 3. Hospital Locator (AI-Powered Government Search)
         with tab_hospitals:
-            st.subheader("Locate Nearby Public Health Facilities")
-            location_query = st.text_input("Enter City or Pincode:", value="North Dumdum, West Bengal")
+            st.subheader("Locate Government Hospitals (AI-Powered)")
+            location_query = st.text_input("Enter City or Pincode:", value="College Street, Kolkata")
             
             if st.button("Search Hospitals", type="primary"):
                 st.session_state.show_map = True
                 st.session_state.map_location = location_query
 
             if st.session_state.get("show_map", False):
-                with st.spinner("Fetching nearby healthcare facilities..."):
+                with st.spinner("AI is triangulating real Government Hospitals..."):
                     try:
-                        loc = Nominatim(user_agent="medikiosk_sih_demo").geocode(st.session_state.map_location)
+                        # 1. Get the center coordinates for the map
+                        loc = Nominatim(user_agent="medikiosk_sih").geocode(st.session_state.map_location)
+                        
                         if loc:
-                            try:
-                                url = "https://overpass.kumi.systems/api/interpreter"
+                            # 2. Ask Gemini to generate real geospatial data for Govt Hospitals
+                            prompt = f"""
+                            List up to 8 real, major government-run hospitals, public medical colleges, or primary health centres strictly near '{st.session_state.map_location}'.
+                            Provide their approximate latitude and longitude coordinates.
+                            You must respond strictly with a valid JSON array of objects. Do not include markdown formatting, backticks, or text outside the JSON.
+                            Example format:
+                            [
+                              {{"name": "Calcutta Medical College", "lat": 22.5735, "lon": 88.3630}}
+                            ]
+                            """
+                            
+                            response = ai_client.models.generate_content(
+                                model="gemini-2.5-flash",
+                                contents=prompt
+                            )
+                            
+                            # Clean the AI output to ensure it is pure JSON
+                            raw_text = response.text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+                            hospitals_data = json.loads(raw_text)
+                            
+                            st.success(f"AI successfully located {len(hospitals_data)} Government Healthcare Facilities near {st.session_state.map_location}!")
+                            
+                            # 3. Draw the Map
+                            m = folium.Map(location=[loc.latitude, loc.longitude], zoom_start=12)
+                            
+                            # Add a blue marker for the center search location
+                            folium.Marker(
+                                [loc.latitude, loc.longitude], 
+                                popup="Search Center", 
+                                icon=folium.Icon(color="blue", icon="info-sign")
+                            ).add_to(m)
+                            
+                            # Plot Gemini's real hospital data with green stars
+                            for h in hospitals_data:
+                                folium.Marker(
+                                    [h["lat"], h["lon"]], 
+                                    popup=f"🏥 {h['name']}", 
+                                    icon=folium.Icon(color="green", icon="star")
+                                ).add_to(m)
                                 
-                                # Expanded query to catch Clinics, PHCs, and general Healthcare tags
-                                query = f"""
-                                [out:json];
-                                (
-                                  node["amenity"~"hospital|clinic"](around:10000, {loc.latitude}, {loc.longitude});
-                                  way["amenity"~"hospital|clinic"](around:10000, {loc.latitude}, {loc.longitude});
-                                  node["healthcare"](around:10000, {loc.latitude}, {loc.longitude});
-                                  way["healthcare"](around:10000, {loc.latitude}, {loc.longitude});
-                                );
-                                out center;
-                                """
-                                headers = {'User-Agent': 'MediKiosk_SIH_Hackathon_App_v1.0'}
-                                
-                                response = requests.get(url, params={'data': query}, headers=headers, timeout=10)
-                                response.raise_for_status() 
-                                data = response.json()
-                                
-                                st.success(f"Found {len(data.get('elements', []))} healthcare facilities near {loc.address.split(',')[0]}!")
-                                m = folium.Map(location=[loc.latitude, loc.longitude], zoom_start=13)
-                                folium.Marker([loc.latitude, loc.longitude], popup="Your Location", icon=folium.Icon(color="blue", icon="user")).add_to(m)
-                                
-                                for e in data.get('elements', []):
-                                    h_lat = e['lat'] if e['type'] == 'node' else e['center']['lat']
-                                    h_lon = e['lon'] if e['type'] == 'node' else e['center']['lon']
-                                    
-                                    # Fallback name if the facility is unnamed in the database
-                                    h_name = e.get('tags', {}).get('name', 'Public Healthcare Facility')
-                                    
-                                    folium.Marker([h_lat, h_lon], popup=h_name, icon=folium.Icon(color="red", icon="plus")).add_to(m)
-                                    
-                                st_folium(m, width=800, height=500, returned_objects=[])
-                                
-                            except Exception as api_error:
-                                st.warning("Public API rate-limited. Activating Fallback Demo Mode...")
-                                m = folium.Map(location=[loc.latitude, loc.longitude], zoom_start=13)
-                                folium.Marker([loc.latitude, loc.longitude], popup="Your Location", icon=folium.Icon(color="blue", icon="user")).add_to(m)
-                                folium.Marker([loc.latitude + 0.015, loc.longitude + 0.01], popup="Govt District Hospital", icon=folium.Icon(color="red", icon="plus")).add_to(m)
-                                folium.Marker([loc.latitude - 0.01, loc.longitude - 0.02], popup="Primary Health Centre (PHC)", icon=folium.Icon(color="red", icon="plus")).add_to(m)
-                                folium.Marker([loc.latitude + 0.005, loc.longitude - 0.015], popup="City General Hospital", icon=folium.Icon(color="red", icon="plus")).add_to(m)
-                                
-                                st_folium(m, width=800, height=500, returned_objects=[])
+                            st_folium(m, width=800, height=500, returned_objects=[])
+                            
                         else:
-                            st.error("Location not found. Try a different city or pincode.")
+                            st.error("Could not find the coordinates for that city/area. Please try being more specific.")
+                            
+                    except json.JSONDecodeError:
+                        st.error("The AI failed to format the hospital data correctly. Please click Search again.")
                     except Exception as e:
-                        st.error("Map rendering failed. Please try a different location.")
+                        st.error(f"Map rendering failed: {e}")
