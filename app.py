@@ -18,6 +18,7 @@ import io
 # ---------------------------------------------------------
 # 1. DATABASE & AI CONFIGURATION
 # ---------------------------------------------------------
+# Pulling secure keys from Streamlit Secrets
 MONGO_URI = st.secrets["MONGO_URI"]
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 MASTER_DOCTOR_KEY = "DOC-SECURE-2026"
@@ -38,9 +39,13 @@ def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 def register_user(username, password, role):
+    # Check if username already exists
     if users_col.find_one({"username": username}):
         return False
+    
+    # Generate Unique IDs based on role
     unique_id = f"PT-{random.randint(100000, 999999)}" if role == "Patient" else f"DR-{random.randint(1000, 9999)}"
+    
     users_col.insert_one({
         "username": username,
         "password_hash": hash_password(password),
@@ -87,12 +92,14 @@ if not st.session_state.logged_in:
     if st.session_state.active_portal is None:
         st.title("🏥 MediKiosk Cloud System")
         st.write("Please select your portal to continue:")
+        
         col1, col2 = st.columns(2)
         with col1:
             st.info("**Citizen / Patient Portal**\n\nSubmit intake notes and view records.")
             if st.button("Enter Citizen Portal", use_container_width=True):
                 st.session_state.active_portal = "Patient"
                 st.rerun()
+                
         with col2:
             st.error("**Doctor / Authority Portal**\n\nReview real-time live OPD queues.")
             if st.button("Enter Doctor Portal", use_container_width=True):
@@ -102,11 +109,13 @@ if not st.session_state.logged_in:
         portal = st.session_state.active_portal
         st.button("← Back to Selection", on_click=lambda: st.session_state.update(active_portal=None))
         st.title(f"{'🩺' if portal == 'Doctor' else '📋'} {portal} Portal")
+        
         tab_login, tab_register = st.tabs(["🔑 Login", "📝 Sign Up"])
 
         with tab_login:
             login_user = st.text_input("Username", key="login_u")
             login_pass = st.text_input("Password", type="password", key="login_p")
+            
             if st.button(f"Log In to {portal} Portal", type="primary"):
                 user_data = authenticate_user(login_user, login_pass, portal)
                 if user_data:
@@ -121,9 +130,11 @@ if not st.session_state.logged_in:
         with tab_register:
             reg_user = st.text_input("Choose Username", key="reg_u")
             reg_pass = st.text_input("Choose Password", type="password", key="reg_p")
+            
             doctor_key = ""
             if portal == "Doctor":
-                doctor_key = st.text_input("Doctor Authorization Key", type="password")
+                doctor_key = st.text_input("Doctor Authorization Key (For Medical Staff Only)", type="password")
+                
             if st.button(f"Register as {portal}"):
                 if not reg_user or not reg_pass:
                     st.warning("Please fill in all required fields.")
@@ -148,49 +159,58 @@ else:
             logout()
     st.markdown("---")
 
+    # ==========================================
     # --- DOCTOR VIEW ---
+    # ==========================================
     if st.session_state.role == "Doctor":
         st.title("🩺 Live Physician OPD Dashboard")
         st.subheader("Incoming Patient Queue")
         
+        # Fetch all records, newest first
         records = list(intakes_col.find({}, {"_id": 0}).sort("timestamp", -1))
         
         if not records:
             st.info("No patient intake submissions currently in the queue.")
         else:
-            # Display patient queue summary
-            queue_data = [{"ID": r.get("patient_id"), "Patient": r.get("patient_username"), "Symptoms": r.get("symptoms"), "Status": r.get("status")} for r in records]
+            # Display patient queue summary in a clean table
+            queue_data = [{"ID": r.get("patient_id", "N/A"), "Patient": r.get("patient_username", "Unknown"), "Symptoms": r.get("symptoms", ""), "Status": r.get("status", "Unknown")} for r in records]
             st.dataframe(queue_data, use_container_width=True)
             
             st.markdown("---")
             st.subheader("✍️ Clinical Review & Sign-Off")
             
+            # Safe filter to ignore old test records missing IDs
             pending_records = [r for r in records if r.get("status") == "Awaiting Review" and "intake_id" in r]
             
             if pending_records:
+                # Create a readable list for the dropdown
                 pending_options = {r["intake_id"]: f"{r.get('patient_username')} (ID: {r.get('patient_id')})" for r in pending_records}
-                selected_intake = st.selectbox("Select a patient record:", options=list(pending_options.keys()), format_func=lambda x: pending_options[x])
+                selected_intake = st.selectbox("Select a patient record to review:", options=list(pending_options.keys()), format_func=lambda x: pending_options[x])
                 
+                # Find the selected record's full details
                 record = next(r for r in pending_records if r["intake_id"] == selected_intake)
                 
                 # Display AI Insights
-                st.info(f"**🤖 AI Clinical Summary:** {record.get('ai_summary', 'N/A')}")
+                st.info(f"**🤖 AI Clinical Summary:** {record.get('ai_summary', 'Pending AI Processing')}")
                 current_meds = record.get('current_meds', 'None provided')
-                st.write(f"**Current Medications (From Photo):** {current_meds}")
+                st.write(f"**Current Medications (Extracted from Photo):** {current_meds}")
                 
-                # Feature: Suggest Alternative Medicines
-                if current_meds not in ["None provided", "N/A", "None"]:
+                # AI Feature: Suggest Alternative Medicines
+                if current_meds not in ["None provided", "N/A", "None", "Illegible - Manual Review Needed"]:
                     if st.button("🔍 Suggest Generic Alternatives for these Meds"):
-                        with st.spinner("Finding alternatives..."):
-                            alt_response = ai_client.models.generate_content(
-                                model="gemini-2.5-flash",
-                                contents=f"List low-cost generic alternatives for these medications: {current_meds}. Keep it brief."
-                            )
-                            st.success(alt_response.text)
+                        with st.spinner("Finding cost-effective alternatives..."):
+                            try:
+                                alt_response = ai_client.models.generate_content(
+                                    model="gemini-2.5-flash",
+                                    contents=f"List low-cost generic alternatives for these medications: {current_meds}. Keep it brief."
+                                )
+                                st.success(alt_response.text)
+                            except Exception as e:
+                                st.error("AI service is currently unavailable.")
                 
                 st.markdown("---")
-                prescription = st.text_area("Write Digital Prescription:")
-                st.write("Draw your signature below (Mouse or Stylus):")
+                prescription = st.text_area("Write Digital Prescription / Treatment Plan:")
+                st.write("Draw your signature below (Use Mouse or Touch/Stylus):")
                 
                 # Virtual Signature Canvas
                 canvas_result = st_canvas(
@@ -207,7 +227,7 @@ else:
                     doctor_signature = f"Dr. {st.session_state.username}"
                     sig_b64 = ""
                     
-                    # Convert drawn signature to Base64 Image
+                    # Convert drawn signature to Base64 Image string for database storage
                     if canvas_result.image_data is not None:
                         img_np = canvas_result.image_data
                         img_pil = Image.fromarray(img_np.astype('uint8'), 'RGBA')
@@ -215,6 +235,7 @@ else:
                         img_pil.save(buffered, format="PNG")
                         sig_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
                     
+                    # Update the record in MongoDB
                     intakes_col.update_one(
                         {"intake_id": selected_intake},
                         {"$set": {
@@ -229,53 +250,60 @@ else:
             else:
                 st.success("🎉 All patients in the queue have been reviewed!")
 
+    # ==========================================
     # --- PATIENT VIEW ---
+    # ==========================================
     elif st.session_state.role == "Patient":
         st.title("📋 Citizen Health Intake")
         tab_intake, tab_history, tab_hospitals = st.tabs(["📝 New Intake", "📂 My Past Records", "🏥 Find Govt Hospitals"])
         
-        # 1. New Form Submission
+        # 1. New Form Submission (Voice & AI Image)
         with tab_intake:
             st.subheader("Submit New Symptoms & Documents")
             
             # Voice Translation Component
-            indian_languages = {"English": "en-IN", "Hindi": "hi-IN", "Bengali": "bn-IN", "Tamil": "ta-IN"}
+            indian_languages = {"English": "en-IN", "Hindi": "hi-IN", "Bengali": "bn-IN", "Tamil": "ta-IN", "Telugu": "te-IN", "Marathi": "mr-IN", "Gujarati": "gu-IN"}
             lang_code = indian_languages[st.selectbox("Select Language:", list(indian_languages.keys()))]
             
+            st.write("🎙️ **Speak your symptoms or type them below:**")
             audio_bytes = audio_recorder(text="Click to Speak", icon_name="microphone", icon_size="2x")
+            
             recognized_text = ""
             if audio_bytes:
                 st.audio(audio_bytes, format="audio/wav")
-                with st.spinner("Translating..."):
-                    with open("temp.wav", "wb") as f: f.write(audio_bytes)
+                with st.spinner("Translating audio..."):
+                    with open("temp.wav", "wb") as f: 
+                        f.write(audio_bytes)
                     r = sr.Recognizer()
                     with sr.AudioFile("temp.wav") as source:
                         try:
                             recognized_text = r.recognize_google(r.record(source), language=lang_code)
-                            st.success("Audio transcribed!")
+                            st.success("Audio transcribed successfully!")
                         except:
-                            st.error("Could not transcribe audio.")
+                            st.error("Could not clearly understand the audio. Please try again.")
 
-            symptoms = st.text_area("Symptoms:", value=recognized_text, height=100)
-            duration = st.text_input("Duration (e.g., 3 days):")
+            symptoms = st.text_area("Describe your primary symptoms:", value=recognized_text, height=100)
+            duration = st.text_input("Duration of symptoms (e.g., 3 days, 2 weeks):")
             
             # Image Upload Component
             uploaded_file = st.file_uploader("Upload past prescription or lab report (optional):", type=["png", "jpg", "jpeg"])
             
             if st.button("Submit to Doctor Queue", type="primary"):
                 if symptoms:
-                    with st.spinner("Processing documents with AI..."):
+                    with st.spinner("Processing documents and generating AI summary..."):
                         # Multimodal AI prompt
-                        prompt = (f"Symptoms: {symptoms}. Duration: {duration}. "
-                                  "Task 1: Summarize condition briefly. "
-                                  "Task 2: Extract active medications from image. If illegible, write 'Illegible - Manual Review Needed'. "
-                                  "Format strictly as:\nSummary: <summary>\nMedications: <medications>")
+                        prompt = (f"Patient Symptoms: {symptoms}. Duration: {duration}. "
+                                  "Task 1: Summarize the condition briefly for a doctor. "
+                                  "Task 2: If an image is provided, extract active medications from it. If the image handwriting is illegible, strictly write 'Illegible - Manual Review Needed'. "
+                                  "Format your response strictly as:\nSummary: <summary>\nMedications: <medications>")
                         
                         contents = [Image.open(uploaded_file), prompt] if uploaded_file else [prompt]
                         
                         try:
+                            # Send to Gemini
                             response = ai_client.models.generate_content(model="gemini-2.5-flash", contents=contents)
                             ai_text = response.text
+                            
                             if "Summary:" in ai_text and "Medications:" in ai_text:
                                 parts = ai_text.split("Medications:")
                                 summary = parts[0].replace("Summary:", "").strip()
@@ -283,11 +311,13 @@ else:
                             else:
                                 summary, meds = ai_text, "N/A"
                         except Exception as e:
-                            summary, meds = "AI Processing Failed", "N/A"
+                            summary = "AI Processing Failed due to network or API error."
+                            meds = "N/A"
                         
-                        # Save to Database
+                        # Save everything to Database
+                        intake_id = f"IN-{random.randint(10000, 99999)}"
                         intakes_col.insert_one({
-                            "intake_id": f"IN-{random.randint(10000, 99999)}",
+                            "intake_id": intake_id,
                             "patient_id": st.session_state.unique_id,
                             "patient_username": st.session_state.username,
                             "symptoms": symptoms,
@@ -298,63 +328,69 @@ else:
                             "status": "Awaiting Review",
                             "signed_by": "Pending"
                         })
-                        st.success("Data sent successfully!")
+                        st.success("Your intake details and documents have been sent to the doctor dashboard!")
                 else:
-                    st.warning("Please enter your symptoms.")
+                    st.warning("Please enter your symptoms before submitting.")
         
         # 2. History View
         with tab_history:
             st.subheader("Your Submission History")
+            # Pull only this patient's records
             my_records = list(intakes_col.find({"patient_username": st.session_state.username}, {"_id": 0}).sort("timestamp", -1))
             
             if not my_records:
-                st.info("No intake forms found.")
+                st.info("You have not submitted any intake forms yet.")
             else:
                 for rec in my_records:
                     with st.container(border=True):
-                        col1, col2 = st.columns([2, 1])
+                        col1, col2 = st.columns([3, 1])
                         with col1:
                             st.write(f"**Symptoms:** {rec.get('symptoms')}")
-                            st.write(f"**Condition Summary:** {rec.get('ai_summary', 'N/A')}")
+                            st.write(f"**AI Condition Summary:** {rec.get('ai_summary', 'N/A')}")
                             if rec.get('prescription'):
-                                st.success(f"**Prescribed Treatment:**\n{rec['prescription']}")
+                                st.success(f"**Doctor's Prescribed Treatment:**\n\n{rec['prescription']}")
                         with col2:
                             if rec.get('status') == "Reviewed":
-                                st.write(f"✅ **{rec.get('signed_by', '')}**")
+                                st.write(f"✅ Signed By\n\n**{rec.get('signed_by', '')}**")
+                                # Render the saved digital signature image
                                 if rec.get('signature_b64'):
                                     st.image(base64.b64decode(rec['signature_b64']), width=150)
                             else:
                                 st.warning("⏳ Pending Review")
 
-        # 3. Hospital Locator 
+        # 3. Hospital Locator (HTTPS & User-Agent fixed)
         with tab_hospitals:
             st.subheader("Locate Nearby Hospitals")
             location_query = st.text_input("Enter City or Pincode:", value="North Dumdum, West Bengal")
+            
             if st.button("Search Hospitals", type="primary"):
-                with st.spinner("Fetching facilities..."):
+                with st.spinner("Fetching nearby facilities..."):
                     try:
                         loc = Nominatim(user_agent="medikiosk_sih").geocode(location_query)
                         if loc:
-                            # 1. Changed to HTTPS (Secure)
+                            # Secure HTTPS request with headers
                             url = "https://overpass-api.de/api/interpreter"
-                            
                             query = f'[out:json];(node["amenity"="hospital"](around:10000, {loc.latitude}, {loc.longitude});way["amenity"="hospital"](around:10000, {loc.latitude}, {loc.longitude}););out center;'
-                            
-                            # 2. Added a User-Agent header so the server knows who we are
                             headers = {'User-Agent': 'MediKiosk_SIH_Hackathon_App_v1.0'}
                             
-                            # 3. Added a 15-second timeout so it doesn't hang forever
                             response = requests.get(url, params={'data': query}, headers=headers, timeout=15)
                             data = response.json()
                             
-                            m = folium.Map(location=[loc.latitude, loc.longitude], zoom_start=13)
-                            folium.Marker([loc.latitude, loc.longitude], popup="You", icon=folium.Icon(color="blue")).add_to(m)
+                            st.success(f"Found {len(data.get('elements', []))} healthcare facilities near {loc.address.split(',')[0]}!")
                             
+                            m = folium.Map(location=[loc.latitude, loc.longitude], zoom_start=13)
+                            
+                            # Add patient location marker
+                            folium.Marker([loc.latitude, loc.longitude], popup="Your Location", icon=folium.Icon(color="blue", icon="user")).add_to(m)
+                            
+                            # Add hospital markers
                             for e in data.get('elements', []):
                                 h_lat = e['lat'] if e['type'] == 'node' else e['center']['lat']
                                 h_lon = e['lon'] if e['type'] == 'node' else e['center']['lon']
-                                folium.Marker([h_lat, h_lon], popup=e.get('tags', {}).get('name', 'Hospital'), icon=folium.Icon(color="red")).add_to(m)
+                                folium.Marker([h_lat, h_lon], popup=e.get('tags', {}).get('name', 'Hospital/Clinic'), icon=folium.Icon(color="red", icon="plus")).add_to(m)
                                 
                             st_folium(m, width=800, height=500)
+                        else:
+                            st.error("Location not found. Try a different city or pincode.")
                     except Exception as e:
-                        st.error(f"Error fetching map data: {e}")
+                        st.error(f"Error fetching map data: {e}. The public server might be temporarily busy.")
