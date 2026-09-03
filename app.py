@@ -330,20 +330,20 @@ else:
                             else:
                                 st.warning("⏳ Pending Review")
 
-        # 3. Hospital Locator (True GPS + AI-Powered Govt Search)
+        # 3. Hospital Locator (Two-Tier 10km Radial AI Search)
         with tab_hospitals:
-            st.subheader("Locate Government Hospitals")
-            st.caption("Use the kiosk's live GPS or search manually by city/pincode.")
+            st.subheader("Locate Government Healthcare Facilities")
+            st.caption("Prioritizes local government health centers within 10 km, followed by regional tertiary medical colleges.")
             
             col1, col2 = st.columns([1, 1])
             
             with col1:
-                st.markdown("**📍 Option 1: Use Live GPS**")
+                st.markdown("**📍 Option 1: Live GPS Location**")
                 gps_loc = streamlit_geolocation()
                 
             with col2:
-                st.markdown("**⌨️ Option 2: Manual Search**")
-                location_query = st.text_input("Enter City or Pincode:", placeholder="e.g., College Street, Kolkata", label_visibility="collapsed")
+                st.markdown("**⌨️ Option 2: Manual Location**")
+                location_query = st.text_input("Enter City, Town, or Pincode:", placeholder="e.g., North Dumdum, Kolkata", label_visibility="collapsed")
                 manual_search = st.button("Search by Text", type="primary")
 
             if manual_search and location_query.strip():
@@ -354,59 +354,116 @@ else:
                 st.session_state.search_val = gps_loc
 
             if st.session_state.get("search_type"):
-                with st.spinner("AI is triangulating real Government Hospitals..."):
+                with st.spinner("Triangulating public health centers and regional medical colleges..."):
                     try:
                         lat, lon = None, None
                         search_context = ""
                         
                         if st.session_state.search_type == "manual":
-                            loc = Nominatim(user_agent="medikiosk_sih").geocode(st.session_state.search_val)
+                            loc = Nominatim(user_agent="medikiosk_sih_v2").geocode(st.session_state.search_val)
                             if loc:
                                 lat, lon = loc.latitude, loc.longitude
                                 search_context = f"the area of '{st.session_state.search_val}'"
                             else:
-                                st.error("Could not find coordinates for that text.")
+                                st.error("Could not find coordinates for that location.")
                         elif st.session_state.search_type == "gps":
                             lat = st.session_state.search_val['latitude']
                             lon = st.session_state.search_val['longitude']
-                            search_context = f"Latitude {lat}, Longitude {lon}"
+                            search_context = f"coordinates Latitude {lat}, Longitude {lon}"
                         
                         if lat and lon:
+                            # Two-Tier Structured Prompt
                             prompt = f"""
-                            List up to 8 real, major government-run hospitals, public medical colleges, or primary health centres strictly near {search_context}.
-                            Provide their approximate latitude and longitude coordinates.
-                            You must respond strictly with a valid JSON array of objects. Do not include markdown formatting, backticks, or text outside the JSON.
-                            Example format:
+                            You are a geospatial health directory for Indian public healthcare.
+                            Given the center location at {search_context} (Lat: {lat}, Lon: {lon}):
+
+                            Identify real, government-run health institutions divided strictly into two categories:
+
+                            1. LOCAL TIER (Strictly within a 10 km radius):
+                               - Focus on: Sub-Divisional Hospitals (SDH), State General Hospitals (SGH), Urban Primary Health Centres (UPHC), Community Health Centres (CHC), and local government dispensaries/nursing facilities.
+                               - Provide up to 6 real facilities.
+
+                            2. REGIONAL REFERRAL TIER (Beyond 10 km radius):
+                               - Major landmark Government Medical Colleges and apex state tertiary referral hospitals serving this district/region (e.g., Calcutta Medical College, Barasat Govt Medical College & Hospital, RG Kar, NRS, etc.).
+                               - Provide up to 4 major facilities.
+
+                            Return strictly a raw JSON array of objects without any markdown formatting or backticks:
                             [
-                              {{"name": "Calcutta Medical College", "lat": 22.5735, "lon": 88.3630}}
+                              {{
+                                "name": "Hospital Name",
+                                "type": "State General Hospital / Medical College / UPHC",
+                                "tier": "Within 10 km" or "Regional (>10km)",
+                                "lat": 22.1234,
+                                "lon": 88.1234
+                              }}
                             ]
                             """
                             
-                            response = ai_client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+                            response = ai_client.models.generate_content(
+                                model="gemini-2.5-flash", 
+                                contents=prompt
+                            )
                             
                             raw_text = response.text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
                             hospitals_data = json.loads(raw_text)
                             
-                            st.success(f"AI successfully located {len(hospitals_data)} Government Healthcare Facilities near you!")
+                            local_facilities = [h for h in hospitals_data if h.get("tier") == "Within 10 km"]
+                            regional_facilities = [h for h in hospitals_data if h.get("tier") != "Within 10 km"]
                             
-                            m = folium.Map(location=[lat, lon], zoom_start=12)
+                            st.success(f"Located {len(local_facilities)} local public facilities (≤10 km) and {len(regional_facilities)} regional tertiary hospitals.")
                             
+                            # Initialize map centered on user
+                            m = folium.Map(location=[lat, lon], zoom_start=11)
+                            
+                            # 1. User/Kiosk Location Marker
                             folium.Marker(
                                 [lat, lon], 
-                                popup="Your Location", 
+                                popup="📍 Kiosk / Patient Location", 
                                 icon=folium.Icon(color="blue", icon="user")
                             ).add_to(m)
                             
-                            for h in hospitals_data:
+                            # 2. 10 km Radius Boundary Ring
+                            folium.Circle(
+                                location=[lat, lon],
+                                radius=10000,  # 10,000 meters = 10 km
+                                color="#2b8cbe",
+                                weight=2,
+                                fill=True,
+                                fill_color="#a6bddb",
+                                fill_opacity=0.15,
+                                popup="10 km Local Service Radius"
+                            ).add_to(m)
+                            
+                            # 3. Plot Local Tier (<= 10 km) in Green
+                            for h in local_facilities:
                                 folium.Marker(
                                     [h["lat"], h["lon"]], 
-                                    popup=f"🏥 {h['name']}", 
-                                    icon=folium.Icon(color="green", icon="star")
+                                    popup=f"🟢 [Local ≤10km] {h['name']} ({h.get('type', 'Govt Facility')})", 
+                                    icon=folium.Icon(color="green", icon="plus")
                                 ).add_to(m)
                                 
-                            st_folium(m, width=800, height=500, returned_objects=[])
+                            # 4. Plot Regional Tier (> 10 km) in Dark Red / Cadre
+                            for h in regional_facilities:
+                                folium.Marker(
+                                    [h["lat"], h["lon"]], 
+                                    popup=f"🏛️ [Regional Referral] {h['name']} ({h.get('type', 'Apex Hospital')})", 
+                                    icon=folium.Icon(color="darkred", icon="star")
+                                ).add_to(m)
+                                
+                            st_folium(m, width=850, height=520, returned_objects=[])
                             
+                            # Facility Directory Breakdown
+                            col_loc, col_reg = st.columns(2)
+                            with col_loc:
+                                st.markdown("### 🟢 Local Health Centers (≤ 10 km)")
+                                for h in local_facilities:
+                                    st.markdown(f"- **{h['name']}**  \n  *{h.get('type', 'Govt Health Center')}*")
+                            with col_reg:
+                                st.markdown("### 🏛️ Regional Medical Colleges (> 10 km)")
+                                for h in regional_facilities:
+                                    st.markdown(f"- **{h['name']}**  \n  *{h.get('type', 'Tertiary Referral Center')}*")
+                                    
                     except json.JSONDecodeError:
-                        st.error("The AI failed to format the hospital data correctly. Please try searching again.")
+                        st.error("AI returned an unparseable response. Please search again.")
                     except Exception as e:
-                        st.error(f"Map rendering failed: {e}")
+                        st.error(f"Error mapping facilities: {e}")
