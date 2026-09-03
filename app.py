@@ -335,15 +335,26 @@ else:
                     try:
                         loc = Nominatim(user_agent="medikiosk_sih").geocode(location_query)
                         if loc:
-                            url = "http://overpass-api.de/api/interpreter"
+                            # 1. Changed to HTTPS (Secure)
+                            url = "https://overpass-api.de/api/interpreter"
+                            
                             query = f'[out:json];(node["amenity"="hospital"](around:10000, {loc.latitude}, {loc.longitude});way["amenity"="hospital"](around:10000, {loc.latitude}, {loc.longitude}););out center;'
-                            data = requests.get(url, params={'data': query}).json()
+                            
+                            # 2. Added a User-Agent header so the server knows who we are
+                            headers = {'User-Agent': 'MediKiosk_SIH_Hackathon_App_v1.0'}
+                            
+                            # 3. Added a 15-second timeout so it doesn't hang forever
+                            response = requests.get(url, params={'data': query}, headers=headers, timeout=15)
+                            data = response.json()
+                            
                             m = folium.Map(location=[loc.latitude, loc.longitude], zoom_start=13)
                             folium.Marker([loc.latitude, loc.longitude], popup="You", icon=folium.Icon(color="blue")).add_to(m)
-                            for e in data['elements']:
+                            
+                            for e in data.get('elements', []):
                                 h_lat = e['lat'] if e['type'] == 'node' else e['center']['lat']
                                 h_lon = e['lon'] if e['type'] == 'node' else e['center']['lon']
                                 folium.Marker([h_lat, h_lon], popup=e.get('tags', {}).get('name', 'Hospital'), icon=folium.Icon(color="red")).add_to(m)
+                                
                             st_folium(m, width=800, height=500)
                     except Exception as e:
                         st.error(f"Error fetching map data: {e}")
