@@ -10,3 +10,4 @@ geopy
 google-genai
 streamlit-drawable-canvas
 pillow
+streamlit-geolocation
