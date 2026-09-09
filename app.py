@@ -307,33 +307,36 @@ else:
                             img_part = Image.open(io.BytesIO(doc_bytes))
                             ai_contents.insert(0, img_part)
                         
-                        # Ultra-High Precision Clinical Prompt
+                        # Bulletproof JSON Clinical Prompt
                         ai_contents.append("""
-                        You are an expert clinical AI assistant. 
+                        You are an expert clinical AI assistant. Analyze the provided symptoms and/or medical document (prescription, lab report, or clinical notes).
                         
-                        Task 1 (Symptom Summary): Create a precise, professional medical summary of the patient's reported symptoms and duration. Translate to clinical English if spoken in a regional language.
+                        1. Create a precise, professional medical summary. Translate to English if needed.
+                        2. Extract a list of all medications, dosages, and instructions. If a document is uploaded but no medications are present, extract the key medical findings instead.
+                        3. If handwriting is genuinely illegible, write '[ILLEGIBLE - MANUAL REVIEW REQUIRED]'.
                         
-                        Task 2 (Prescription/Document Analysis): Carefully analyze the attached image. 
-                        - Accurately transcribe all medication names, dosages (e.g., 500mg), and frequencies (e.g., 1-0-1, OD, BD).
-                        - Translate any regional language instructions into clear English.
-                        - CRITICAL: If a word or dosage is genuinely illegible, you must write '[ILLEGIBLE - MANUAL REVIEW REQUIRED]'. You are strictly forbidden from guessing or hallucinating drug names.
-                        
-                        Format your response strictly as:
-                        Summary: <precise clinical summary>
-                        Medications: <detailed medication list with dosages and instructions>
+                        CRITICAL: You MUST respond STRICTLY with a valid JSON object. Do not include markdown formatting, backticks, or introductory text.
+                        Use exactly this format:
+                        {
+                          "summary": "your detailed clinical summary here",
+                          "medications": "1. Med name - dosage\n2. Med name - dosage"
+                        }
                         """)
                         
                         try:
-                            # If 2.5-flash gives a 503 error again during your demo, change this to "gemini-1.5-flash"
                             response = ai_client.models.generate_content(model="gemini-2.5-flash", contents=ai_contents)
-                            ai_text = response.text
                             
-                            if "Summary:" in ai_text and "Medications:" in ai_text:
-                                parts = ai_text.split("Medications:")
-                                summary = parts[0].replace("Summary:", "").strip()
-                                meds = parts[1].strip()
-                            else:
-                                summary, meds = ai_text, "N/A"
+                            # Safely clean and parse the JSON output
+                            raw_text = response.text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+                            
+                            try:
+                                parsed_data = json.loads(raw_text)
+                                summary = parsed_data.get("summary", "Summary could not be generated.")
+                                meds = parsed_data.get("medications", "None extracted.")
+                            except json.JSONDecodeError:
+                                # Ultimate fallback if AI ignores JSON rules but still provides text
+                                summary = raw_text
+                                meds = "Check summary for details (Formatting Error)"
                                 
                             # Only insert into the database IF the AI succeeds
                             intakes_col.insert_one({
@@ -352,7 +355,6 @@ else:
                             st.success("Case submitted successfully to the Doctor Queue!")
                             
                         except Exception as e:
-                            # Catch the 503 error gracefully without crashing or faking a success
                             st.error(f"Google AI Server Error: {e}")
                             st.warning("⚠️ The AI server is experiencing a temporary traffic spike. Please wait 30 seconds and click Submit again.")
                 else:
