@@ -324,33 +324,37 @@ else:
                         """)
                         
                         try:
+                            # If 2.5-flash gives a 503 error again during your demo, change this to "gemini-1.5-flash"
                             response = ai_client.models.generate_content(model="gemini-2.5-flash", contents=ai_contents)
                             ai_text = response.text
+                            
                             if "Summary:" in ai_text and "Medications:" in ai_text:
                                 parts = ai_text.split("Medications:")
                                 summary = parts[0].replace("Summary:", "").strip()
                                 meds = parts[1].strip()
                             else:
                                 summary, meds = ai_text, "N/A"
+                                
+                            # Only insert into the database IF the AI succeeds
+                            intakes_col.insert_one({
+                                "intake_id": f"IN-{random.randint(10000, 99999)}",
+                                "patient_id": st.session_state.unique_id,
+                                "patient_username": st.session_state.username,
+                                "symptoms": symptoms,
+                                "duration": duration,
+                                "ai_summary": summary,
+                                "current_meds": meds if uploaded_file else "None provided",
+                                "document_b64": doc_b64,
+                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "status": "Awaiting Review",
+                                "signed_by": "Pending"
+                            })
+                            st.success("Case submitted successfully to the Doctor Queue!")
+                            
                         except Exception as e:
-                            st.error(f"Detailed AI Error: {e}")
-                            summary, meds = "AI Processing Failed", "N/A"
-                        
-                        intakes_col.insert_one({
-                            "intake_id": f"IN-{random.randint(10000, 99999)}",
-                            "patient_id": st.session_state.unique_id,
-                            "patient_username": st.session_state.username,
-                            "symptoms": symptoms,
-                            "duration": duration,
-                            "ai_summary": summary,
-                            "current_meds": meds if uploaded_file else "None provided",
-                            "document_b64": doc_b64,
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "status": "Awaiting Review",
-                            "signed_by": "Pending"
-                        })
-                        if "Detailed AI Error" not in str(summary):
-                            st.success("Case submitted successfully!")
+                            # Catch the 503 error gracefully without crashing or faking a success
+                            st.error(f"Google AI Server Error: {e}")
+                            st.warning("⚠️ The AI server is experiencing a temporary traffic spike. Please wait 30 seconds and click Submit again.")
                 else:
                     st.warning("Please enter your symptoms.")
         
