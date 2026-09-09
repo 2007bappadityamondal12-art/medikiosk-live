@@ -200,7 +200,7 @@ else:
             col_doc1, col_doc2 = st.columns(2)
             with col_doc1:
                 st.write(f"**Extracted Medications:**\n{record.get('current_meds', 'None provided')}")
-                if record.get('current_meds') not in ["None provided", "N/A", "None", "Illegible - Manual Review Needed"]:
+                if record.get('current_meds') not in ["None provided", "N/A", "None", "Illegible - Manual Review Needed", "None extracted.", "Check summary for details (Formatting Error)"]:
                     if st.button("🔍 Suggest Generic Alternatives"):
                         with st.spinner("Finding cost-effective alternatives..."):
                             try:
@@ -236,15 +236,17 @@ else:
             
             if st.button("✍️ Send to Patient for Final Consent", type="primary"):
                 sig_b64 = ""
-                if canvas_result.image_data is not None:
-                    try:
+                # Safely attempt to grab the signature data without crashing the app if the library bugs out
+                try:
+                    if canvas_result is not None and canvas_result.image_data is not None:
                         img_np = canvas_result.image_data
                         img_pil = Image.fromarray(img_np.astype('uint8'), 'RGBA')
                         buffered = io.BytesIO()
                         img_pil.save(buffered, format="PNG")
                         sig_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-                    except Exception as e:
-                        st.error("Error processing signature. Proceeding without visual signature.")
+                except Exception:
+                    # If the canvas throws a sync error, we just silently ignore it and proceed
+                    pass
                 
                 doctor_full_title = f"Dr. {st.session_state.username}, {st.session_state.hospital_name}"
                 
