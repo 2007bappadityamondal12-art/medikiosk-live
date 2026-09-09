@@ -3,7 +3,6 @@ from pymongo import MongoClient
 import hashlib
 from datetime import datetime
 import random
-import requests
 import folium
 from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
@@ -21,7 +20,8 @@ from streamlit_geolocation import streamlit_geolocation
 # 1. DATABASE & AI CONFIGURATION
 # ---------------------------------------------------------
 MONGO_URI = st.secrets["MONGO_URI"]
-GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+KEY_1 = st.secrets["GEMINI_API_KEY_1"]
+KEY_2 = st.secrets.get("GEMINI_API_KEY_2", KEY_1) # Safely defaults to Key 1 if Key 2 isn't set
 MASTER_DOCTOR_KEY = "DOC-SECURE-2026"
 
 @st.cache_resource
@@ -33,8 +33,26 @@ db = get_database()
 users_col = db["users"]
 intakes_col = db["intakes"]
 
-# Initialize Gemini AI
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
+# Initialize two separate clients for load balancing
+client_1 = genai.Client(api_key=KEY_1)
+client_2 = genai.Client(api_key=KEY_2)
+
+# --- THE TRIPLE-THREAT FALLBACK MECHANISM ---
+def safe_ai_request(prompt_contents, primary="gemini-2.5-flash", fallback="gemini-1.5-flash"):
+    """Tries Key 1, then Key 2, then falls back to a secondary model."""
+    # Attempt 1: Primary Model with Key 1
+    try:
+        return client_1.models.generate_content(model=primary, contents=prompt_contents)
+    except Exception as e1:
+        # Attempt 2: Primary Model with Key 2 (Fixes 429 Rate Limits)
+        try:
+            return client_2.models.generate_content(model=primary, contents=prompt_contents)
+        except Exception as e2:
+            # Attempt 3: Backup Model with Key 1 (Fixes 503 Server Overloads)
+            try:
+                return client_1.models.generate_content(model=fallback, contents=prompt_contents)
+            except Exception as e3:
+                raise Exception(f"All AI fail-safes triggered. Latest error: {e3}")
 
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
@@ -195,7 +213,7 @@ else:
             
             record = next(r for r in pending_records if r["intake_id"] == selected_intake)
             
-            st.info(f"**🤖 AI Clinical Summary (Gemini 2.5 Flash):**\n\n{record.get('ai_summary', 'Pending')}")
+            st.info(f"**🤖 AI Clinical Summary:**\n\n{record.get('ai_summary', 'Pending')}")
             
             col_doc1, col_doc2 = st.columns(2)
             with col_doc1:
@@ -204,10 +222,7 @@ else:
                     if st.button("🔍 Suggest Generic Alternatives"):
                         with st.spinner("Finding cost-effective alternatives..."):
                             try:
-                                alt_response = ai_client.models.generate_content(
-                                    model="gemini-2.5-flash",
-                                    contents=f"List low-cost generic alternatives for these medications: {record.get('current_meds')}. Keep it brief."
-                                )
+                                alt_response = safe_ai_request(f"List low-cost generic alternatives for these medications: {record.get('current_meds')}. Keep it brief.")
                                 st.success(alt_response.text)
                             except Exception as e:
                                 st.error(f"AI service unavailable: {e}")
@@ -236,7 +251,7 @@ else:
             
             if st.button("✍️ Send to Patient for Final Consent", type="primary"):
                 sig_b64 = ""
-                # Safely attempt to grab the signature data without crashing the app if the library bugs out
+                # Secure try-except to prevent drawing pad crash on Streamlit cloud
                 try:
                     if canvas_result is not None and canvas_result.image_data is not None:
                         img_np = canvas_result.image_data
@@ -245,7 +260,6 @@ else:
                         img_pil.save(buffered, format="PNG")
                         sig_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
                 except Exception:
-                    # If the canvas throws a sync error, we just silently ignore it and proceed
                     pass
                 
                 doctor_full_title = f"Dr. {st.session_state.username}, {st.session_state.hospital_name}"
@@ -281,13 +295,11 @@ else:
                 st.audio(audio_bytes, format="audio/wav")
                 with st.spinner("AI is precisely transcribing and translating your audio..."):
                     try:
-                        response = ai_client.models.generate_content(
-                            model="gemini-2.5-flash", 
-                            contents=[
-                                genai.types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav"),
-                                "Transcribe this audio precisely. If it is in a regional Indian language, translate it strictly and accurately into clinical English. Return only the final text."
-                            ]
-                        )
+                        audio_prompt = [
+                            genai.types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav"),
+                            "Transcribe this audio precisely. If it is in a regional Indian language, translate it strictly and accurately into clinical English. Return only the final text."
+                        ]
+                        response = safe_ai_request(audio_prompt)
                         recognized_text = response.text.strip()
                         st.success("Audio accurately transcribed by AI!")
                     except Exception as e:
@@ -326,21 +338,20 @@ else:
                         """)
                         
                         try:
-                            response = ai_client.models.generate_content(model="gemini-2.5-flash", contents=ai_contents)
+                            # Use our new bulletproof fallback function
+                            response = safe_ai_request(ai_contents)
                             
-                            # Safely clean and parse the JSON output
                             raw_text = response.text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
                             
+                            # Safely extract the JSON data
                             try:
                                 parsed_data = json.loads(raw_text)
                                 summary = parsed_data.get("summary", "Summary could not be generated.")
                                 meds = parsed_data.get("medications", "None extracted.")
                             except json.JSONDecodeError:
-                                # Ultimate fallback if AI ignores JSON rules but still provides text
                                 summary = raw_text
                                 meds = "Check summary for details (Formatting Error)"
                                 
-                            # Only insert into the database IF the AI succeeds
                             intakes_col.insert_one({
                                 "intake_id": f"IN-{random.randint(10000, 99999)}",
                                 "patient_id": st.session_state.unique_id,
@@ -358,7 +369,7 @@ else:
                             
                         except Exception as e:
                             st.error(f"Google AI Server Error: {e}")
-                            st.warning("⚠️ The AI server is experiencing a temporary traffic spike. Please wait 30 seconds and click Submit again.")
+                            st.warning("⚠️ The AI server is experiencing extremely high traffic. Please try again in a moment.")
                 else:
                     st.warning("Please enter your symptoms.")
         
@@ -465,7 +476,9 @@ else:
                               }}
                             ]
                             """
-                            response = ai_client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+                            # Use our bulletproof fallback function here too!
+                            response = safe_ai_request(prompt)
+                            
                             raw_text = response.text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
                             hospitals_data = json.loads(raw_text)
                             
